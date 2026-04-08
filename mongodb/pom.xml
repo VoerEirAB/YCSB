@@ -50,7 +50,7 @@ LICENSE file.
     <dependency>
       <groupId>ch.qos.logback</groupId>
       <artifactId>logback-classic</artifactId>
-      <version>1.1.2</version>
+      <version>1.5.32</version>
       <scope>runtime</scope>
     </dependency>
 
@@ -63,7 +63,7 @@ LICENSE file.
     <dependency>
       <groupId>org.xerial.snappy</groupId>
       <artifactId>snappy-java</artifactId>
-      <version>1.1.7.1</version>
+      <version>1.1.10.8</version>
       <type>jar</type>
       <scope>compile</scope>
     </dependency>

@@ -17,7 +17,7 @@
 
 package site.ycsb;
 
-import org.apache.htrace.core.Tracer;
+import io.opentelemetry.api.trace.Tracer;
 
 import java.util.Properties;
 

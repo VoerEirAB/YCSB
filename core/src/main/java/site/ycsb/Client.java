@@ -20,9 +20,12 @@ package site.ycsb;
 import site.ycsb.measurements.Measurements;
 import site.ycsb.measurements.exporter.MeasurementsExporter;
 import site.ycsb.measurements.exporter.TextMeasurementsExporter;
-import org.apache.htrace.core.HTraceConfiguration;
-import org.apache.htrace.core.TraceScope;
-import org.apache.htrace.core.Tracer;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
 
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -154,12 +157,7 @@ public final class Client {
    */
   private static StatusThread statusthread = null;
 
-  // HTrace integration related constants.
-
-  /**
-   * All keys for configuring the tracing system start with this prefix.
-   */
-  private static final String HTRACE_KEY_PREFIX = "htrace.";
+  // OpenTelemetry integration related constants.
   private static final String CLIENT_WORKLOAD_INIT_SPAN = "Client#workload_init";
   private static final String CLIENT_INIT_SPAN = "Client#init";
   private static final String CLIENT_WORKLOAD_SPAN = "Client#workload";
@@ -329,11 +327,12 @@ public final class Client {
     long en;
     int opsDone;
 
-    try (final TraceScope span = tracer.newScope(CLIENT_WORKLOAD_SPAN)) {
+    Span workloadSpan = tracer.spanBuilder(CLIENT_WORKLOAD_SPAN).startSpan();
+    try (final Scope scope = workloadSpan.makeCurrent()) {
 
       final Map<Thread, ClientThread> threads = new HashMap<>(threadcount);
       for (ClientThread client : clients) {
-        threads.put(new Thread(tracer.wrap(client, "ClientThread")), client);
+        threads.put(new Thread(Context.current().wrap(client)), client);
       }
 
       st = System.currentTimeMillis();
@@ -359,10 +358,13 @@ public final class Client {
       }
 
       en = System.currentTimeMillis();
+    } finally {
+      workloadSpan.end();
     }
 
     try {
-      try (final TraceScope span = tracer.newScope(CLIENT_CLEANUP_SPAN)) {
+      Span cleanupSpan = tracer.spanBuilder(CLIENT_CLEANUP_SPAN).startSpan();
+      try (final Scope scope = cleanupSpan.makeCurrent()) {
 
         if (terminator != null && !terminator.isInterrupted()) {
           terminator.interrupt();
@@ -380,6 +382,8 @@ public final class Client {
         }
 
         workload.cleanup();
+      } finally {
+        cleanupSpan.end();
       }
     } catch (WorkloadException e) {
       e.printStackTrace();
@@ -388,8 +392,11 @@ public final class Client {
     }
 
     try {
-      try (final TraceScope span = tracer.newScope(CLIENT_EXPORT_MEASUREMENTS_SPAN)) {
+      Span exportSpan = tracer.spanBuilder(CLIENT_EXPORT_MEASUREMENTS_SPAN).startSpan();
+      try (final Scope scope = exportSpan.makeCurrent()) {
         exportMeasurements(props, opsDone, en - st);
+      } finally {
+        exportSpan.end();
       }
     } catch (IOException e) {
       System.err.println("Could not export measurements, error: " + e.getMessage());
@@ -407,7 +414,8 @@ public final class Client {
     boolean dotransactions = Boolean.valueOf(props.getProperty(DO_TRANSACTIONS_PROPERTY, String.valueOf(true)));
 
     final List<ClientThread> clients = new ArrayList<>(threadcount);
-    try (final TraceScope span = tracer.newScope(CLIENT_INIT_SPAN)) {
+    Span initSpan = tracer.spanBuilder(CLIENT_INIT_SPAN).startSpan();
+    try (final Scope scope = initSpan.makeCurrent()) {
       int opcount;
       if (dotransactions) {
         opcount = Integer.parseInt(props.getProperty(OPERATION_COUNT_PROPERTY, "0"));
@@ -450,21 +458,28 @@ public final class Client {
         System.err.println("Error initializing datastore bindings.");
         System.exit(0);
       }
+    } finally {
+      initSpan.end();
     }
     return clients;
   }
 
   private static Tracer getTracer(Properties props, Workload workload) {
-    return new Tracer.Builder("YCSB " + workload.getClass().getSimpleName())
-        .conf(getHTraceConfiguration(props))
+    SdkTracerProvider tracerProvider = SdkTracerProvider.builder().build();
+    OpenTelemetrySdk openTelemetry = OpenTelemetrySdk.builder()
+        .setTracerProvider(tracerProvider)
         .build();
+    return openTelemetry.getTracer("YCSB " + workload.getClass().getSimpleName());
   }
 
   private static void initWorkload(Properties props, Thread warningthread, Workload workload, Tracer tracer) {
     try {
-      try (final TraceScope span = tracer.newScope(CLIENT_WORKLOAD_INIT_SPAN)) {
+      Span span = tracer.spanBuilder(CLIENT_WORKLOAD_INIT_SPAN).startSpan();
+      try (final Scope scope = span.makeCurrent()) {
         workload.init(props);
         warningthread.interrupt();
+      } finally {
+        span.end();
       }
     } catch (WorkloadException e) {
       e.printStackTrace();
@@ -473,15 +488,6 @@ public final class Client {
     }
   }
 
-  private static HTraceConfiguration getHTraceConfiguration(Properties props) {
-    final Map<String, String> filteredProperties = new HashMap<>();
-    for (String key : props.stringPropertyNames()) {
-      if (key.startsWith(HTRACE_KEY_PREFIX)) {
-        filteredProperties.put(key.substring(HTRACE_KEY_PREFIX.length()), props.getProperty(key));
-      }
-    }
-    return HTraceConfiguration.fromMap(filteredProperties);
-  }
 
   private static Thread setupWarningThread() {
     //show a warning message that creating the workload is taking a while
